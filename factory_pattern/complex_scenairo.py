@@ -5,6 +5,8 @@ from google import genai
 from anthropic import Anthropic
 from dotenv import load_dotenv
 import os
+from typing import List
+
 load_dotenv()
 
 class OpenAIClient(BaseLLM): 
@@ -36,7 +38,6 @@ class OpenAIClient(BaseLLM):
         self.model = model 
         self.client = OpenAI(api_key=self.api_key)
         
-
     def generate(self, prompt: str): 
         try:
             response = self.client.chat.completions.create(
@@ -142,8 +143,17 @@ class AnthropicClient(BaseLLM):
 
 
 class LLMFactory:
+    """
+        This class is a factory for creating LLM clients
+        It uses the register_client method to register new clients
+        It uses the get_llm method to get clients    
+    """
     __registry = {}
 
+    @classmethod
+    def is_registered(cls, name: str) -> bool:
+        return name in cls.__registry.keys()
+        
     @classmethod
     def register_client(cls, name:str, client_class:BaseLLM):
         if not issubclass(client_class, BaseLLM):
@@ -152,17 +162,32 @@ class LLMFactory:
         if not name or not isinstance(name, str):
             raise ValueError("name must be a non-empty string")
         
+        if cls.is_registered(name):
+            raise ValueError(f"Client provider {name} already registered")
+            
         cls.__registry[name] = client_class
 
-
-
     @classmethod 
-    def get_llm(cls,provider: str, model: str = None,  api_key: str = None)-> BaseLLM:
+    def get_llm(
+            cls, 
+            provider: str | list, 
+            model: str = None,
+            api_key: str = None,)-> BaseLLM:
         try:
+            if isinstance(provider, list): 
+                instanced_clients = []
+                for p in provider:
+                    instanced_clients.append(cls.get_llm(p, model=None, api_key=None))
+                return FallbackLLMClient(instanced_clients)
+
             if not provider or not isinstance(provider, str):
                 raise ValueError("provider must be a non-empty string")
-            
-            api_key = os.getenv(provider.upper() + "_API_KEY", api_key)
+
+            if not cls.is_registered(provider):
+                raise ValueError(f"Client provider {provider} not registered")
+
+            api_key = os.getenv(provider.upper() + "_API_KEY")
+            model = os.getenv(provider.upper() + "_MODEL")
 
             if not api_key:
                 raise ValueError("api key is required")
@@ -170,16 +195,34 @@ class LLMFactory:
             client = cls.__registry.get(provider)
             if not client: 
                 raise ValueError(f"Client provider {provider} not found")
-                
             return client(api_key=api_key, model=model)
 
         except Exception as e: 
             raise ValueError(f"Error: {str(e)}")    
         
-            
-LLMFactory.register_client("openai", OpenAIClient)
-LLMFactory.register_client("gemini", GeminiClient)
-LLMFactory.register_client("anthropic", AnthropicClient)    
 
-llm = LLMFactory.get_llm("openai")
-print(llm.generate("Hello, how are you?"))    
+class FallbackLLMClient(BaseLLM): 
+    def __init__(self, clients: List[BaseLLM]):
+        if not clients or not isinstance(clients, list):
+            raise ValueError("clients must be a non-empty list")
+        
+        for client in clients:
+            if not isinstance(client, BaseLLM):
+                raise TypeError("client must be a subclass of BaseLLM")
+
+        self.clients = clients
+
+    def generate(self, prompt:str): 
+        try: 
+            for idx, client in enumerate(self.clients):
+                response = client.generate(prompt)
+                if not response: 
+                    if idx == len(self.clients) - 1: 
+                        print(f"Provider {client.__class__.__name__} failed to generate response")
+                        continue
+                    print(f"Provider {client.__class__.__name__} failed to generate response fill back to {self.clients[idx + 1].__class__.__name__} provider")
+                    continue
+                return response
+        except Exception as e: 
+            print(f"Error: {str(e)}")
+            return None    
