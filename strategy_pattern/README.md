@@ -1,4 +1,4 @@
-# Strategy Pattern in AI
+# Strategy Pattern in AI.
 
 ## Scenario: RAG Text Chunking Pipeline
 
